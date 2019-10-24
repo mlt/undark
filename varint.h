@@ -1,2 +1,2 @@
-int varint_decode(uint64_t *result, uint8_t *varint_p, uint8_t **end);
+int varint_decode(int64_t *result, uint8_t *varint_p, uint8_t **end);
 

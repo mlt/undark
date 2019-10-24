@@ -6,30 +6,24 @@
 
 #include "varint.h"
 
-int varint_decode(uint64_t *result, uint8_t *varint_p, uint8_t **end) {
-	uint8_t *p;
-	int shift;
-	int length;
-	uint64_t value;
+int varint_decode(int64_t *result, uint8_t *varint_p, uint8_t **end) {
+	uint8_t *p = varint_p;
+	int length = 1;
+	int64_t value = 0;
 
-	p = varint_p;
-	length = 0;
-	value = 0;
-	shift = 0;
-	for (;;) {
-		value <<= shift;
-		value |= ((*p & 0x7f));
-		length++;
-		if ((*p & 0x80) == 0x0) {
-			break;
-		}
-		p++;
-		shift += 7;
+	for (; length<9 && (*p & 0x80); length++, p++) {
+		value <<= 7;
+		value |= (*p & 0x7f);
 	}
 
-	if (end != NULL) {
+	if (value & 0x70000000000000)
+		value <<= 1;
+
+	value <<= 7;
+	value |= *p;
+
+	if (end != NULL)
 		*end = ++p;
-	}
 
 	*result = value;
 
