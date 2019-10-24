@@ -368,29 +368,20 @@ Converts 2's compliment byte to signed integer
 Changes:
 
 \------------------------------------------------------------------*/
-char to_signed_byte(uint8_t value) {
-	int signed_value = value;
-	if (value >> 7) signed_value |= -1 << 7;
+
+int32_t to_signed_24bit(uint32_t value) {
+	int32_t signed_value = value;
+
+	if (value >> 23) signed_value |= -1L << 23;
 	return signed_value;
 }
 
-int to_signed_int( unsigned int value ) {
-	int signed_value = value;
+int64_t to_signed_48bit(uint64_t value) {
+	int64_t signed_value = value;
 
-	if (value >> 15) signed_value |= -1 << 15;
+	if (value >> 47) signed_value |= -1LL << 47;
 	return signed_value;
 }
-
-long int to_signed_long( unsigned long int value ) {
-	long int signed_value = value;
-
-	if (value >> 31) signed_value |= -1 << 31;
-	return signed_value;
-}
-
-
-
-
 
 /*-----------------------------------------------------------------\
 Date Code:	: 20131002-220244
@@ -1011,31 +1002,13 @@ Changes:
 			if (t>=0) { fprintf(stdout,",");
 				switch (payload->cells[t].t) {
 					case 0: fprintf(stdout,"NULL"); break;
-					case 1: fprintf(stdout,"x%d", to_signed_byte(*(payload->mapped_data +payload->cells[t].o)) ); break;
-					case 2: {
-								uint16_t n;
-								memcpy(&n, payload->mapped_data +payload->cells[t].o, 2 );
-								fprintf(stdout,"%d" , to_signed_int(ntohs(n)));
-							}
-							break;
-
-					case 3: {
-								uint32_t n;
-								memcpy(&n, payload->mapped_data +payload->cells[t].o, 3 );
-								fprintf(stdout,"%ld", to_signed_long(ntohl(n)));
-							}
-							break;
-
-					case 4: {
-								uint32_t n;
-								memcpy(&n, payload->mapped_data +payload->cells[t].o, 4 );
-								fprintf(stdout,"%ld", to_signed_long(ntohl(n)));
-							}
-							break;
-
-					case 5: fprintf(stdout,"%u", (uint32_t)ntohl(*(payload->mapped_data +payload->cells[t].o))); break;
-					case 6: fprintf(stdout,"%u", (uint32_t)ntohl(*(payload->mapped_data +payload->cells[t].o))); break;
-					case 7: 
+					case 1: fprintf(stdout,"%d", (int8_t)(*(payload->mapped_data +payload->cells[t].o)) ); break;
+					case 2: fprintf(stdout,"%" PRId16, (int16_t)(ntohs(*(uint16_t*)(payload->mapped_data + payload->cells[t].o)))); break;
+					case 3: fprintf(stdout, "%" PRId32, to_signed_24bit(ntohl(*(uint32_t*)(payload->mapped_data + payload->cells[t].o) << 8))); break;
+					case 4: fprintf(stdout,"%" PRId32, (int32_t)(ntohl(*(uint32_t*)(payload->mapped_data + payload->cells[t].o)))); break;
+					case 5: fprintf(stdout, "%" PRId64, to_signed_48bit(ntohll(*(uint64_t*)(payload->mapped_data + payload->cells[t].o) << 16))); break;
+					case 6: fprintf(stdout, "%" PRId64, (int64_t)(ntohll(*(uint64_t*)(payload->mapped_data + payload->cells[t].o)))); break;
+					case 7:
 							{
 								uint64_t n;
 								uint64_t nn;
