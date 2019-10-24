@@ -17,13 +17,27 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <inttypes.h>
+#ifdef _MSC_VER
+#include <io.h>
+uint64_t ntohll(uint64_t value);
+#define ssize_t size_t
+#define S_IRUSR _S_IREAD
+#define S_IWUSR _S_IWRITE
+/* See https://github.com/microsoft/vcpkg and use vcpkg install mman:x64-windows */
+#include <mman/sys/mman.h>
+#else
 #include <sys/mman.h>
+#include <unistd.h>
+#endif
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <arpa/inet.h>
+#endif
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <unistd.h>
 #include <fcntl.h>
-#include <arpa/inet.h>
-//#include <winsock2.h>
 
 #include <ctype.h>
 #include <time.h>
@@ -65,11 +79,11 @@ struct globals {
 	uint8_t verbose;
 
 	char *input_file; // actual file name
-	char *db_origin;	// the mmap'd file origin
-	char *db_end; // the computed end of the mmap'd file ( based on file size )
-	char *db_cfp; // current file position
-	char *db_cpp; // current page position
-	char *db_cpp_limit; // end of the current page
+	uint8_t *db_origin;	// the mmap'd file origin
+	uint8_t *db_end; // the computed end of the mmap'd file ( based on file size )
+	uint8_t *db_cfp; // current file position
+	uint8_t *db_cpp; // current page position
+	uint8_t *db_cpp_limit; // end of the current page
 	size_t db_size;
 
 	uint32_t page_size, page_count, page_number;
@@ -113,7 +127,7 @@ struct sql_payload {
 	int cell_page_offset;
 	struct cell cells[PAYLOAD_CELLS_MAX+1];
 	uint32_t overflow_pages[OVERFLOW_PAGES_MAX+1];
-	char *mapped_data, *mapped_data_endpoint;
+	uint8_t *mapped_data, *mapped_data_endpoint;
 };
 
 struct sqlite_leaf_header {
@@ -230,7 +244,7 @@ int UNDARK_parse_parameters( int argc, char **argv, struct globals *g ) {
 	*/
 	if (argc < 2) {
 		fprintf(stderr,"%s", help);
-		fprintf(stderr,"Sizeof double = %ld,  long double = %ld\n", sizeof(double), sizeof(long double));
+		fprintf(stderr,"Sizeof double = %zd,  long double = %zd\n", sizeof(double), sizeof(long double));
 		exit(1);
 	}
 
@@ -354,7 +368,7 @@ Converts 2's compliment byte to signed integer
 Changes:
 
 \------------------------------------------------------------------*/
-char to_signed_byte(unsigned char value) {
+char to_signed_byte(uint8_t value) {
 	int signed_value = value;
 	if (value >> 7) signed_value |= -1 << 7;
 	return signed_value;
@@ -426,7 +440,7 @@ Dumps text in a SQL friendly format ( doubling of single quotes )
 Changes:
 
 \------------------------------------------------------------------*/
-int sqltdump( char *p, uint16_t l ) {
+int sqltdump( uint8_t *p, uint16_t l ) {
 
 	fprintf(stdout,"\"");
 	while (l--) {
@@ -459,11 +473,11 @@ Comments:
 Changes:
 
 \------------------------------------------------------------------*/
-int blob_dump( unsigned char *p, uint16_t l ) {
+int blob_dump( uint8_t *p, uint16_t l ) {
 
 	fprintf(stdout,"x'");
 	while (l--) {
-		fprintf(stdout,"%02X", ( unsigned char)*p);
+		fprintf(stdout,"%02X", *p);
 		p++;
 	}
 	fprintf(stdout,"'");
@@ -493,7 +507,7 @@ Combo hex + text dump, 16 byte wide rows
 Changes:
 
 \------------------------------------------------------------------*/
-int hdump( unsigned char *p, uint16_t length, char *msg ) {
+int hdump( uint8_t *p, uint16_t length, char *msg ) {
 
 	int oc = 0;
 	int ll = length;
@@ -508,7 +522,7 @@ int hdump( unsigned char *p, uint16_t length, char *msg ) {
 
 	while (ll > 0) {
 		int br;
-		unsigned char *op;
+		uint8_t *op;
 
 		fprintf(stdout,"%04X [%06d] ",oc, ll);
 		oc+=16;
@@ -564,18 +578,18 @@ Comments:
 Changes:
 
 \------------------------------------------------------------------*/
-int blob_dump_to_file( struct globals *g, char *p, size_t l ) {
+int blob_dump_to_file( struct globals *g, uint8_t *p, size_t l ) {
 	int f;
 	ssize_t written;
 	char fn[1024];
 
 	snprintf(fn, sizeof(fn), "%d.blob", g->blob_count);
-	DEBUG fprintf(stdout,"%s:%d:DEBUG: Writing %ld bytes to %s\n", FL , l, fn );
+	DEBUG fprintf(stdout,"%s:%d:DEBUG: Writing %zd bytes to %s\n", FL , l, fn );
 	f = open(fn, O_WRONLY|O_CREAT|O_TRUNC, S_IRUSR|S_IWUSR );
 	if (!f) { fprintf(stderr,"Cannot open %s (%s)\n", fn, strerror(errno)); return 1; }
 	written = write(f, p, l);
 	if ( written != l ) {
-		fprintf(stderr,"Wrote %ld of %ld bytes to %s ( %s )\n", written, l, fn, strerror(errno));
+		fprintf(stderr,"Wrote %zd of %zd bytes to %s ( %s )\n", written, l, fn, strerror(errno));
 		close(f);
 		return 1;
 	}
@@ -656,14 +670,14 @@ Changes:
 added 'mode',  standard, or freespace
 
 \------------------------------------------------------------------*/
-int decode_row( struct globals *g, char *p, char *data_endpoint, struct sql_payload *payload, int mode, size_t forced_length ) {
+int decode_row( struct globals *g, uint8_t *p, uint8_t *data_endpoint, struct sql_payload *payload, int mode, size_t forced_length ) {
 	int t = 0, offset;
-	char *plh_ep; // payload header end point
-	char *base = p;
+	uint8_t *plh_ep; // payload header end point
+	uint8_t *base = p;
 
 	DEBUG {
 		fprintf(stdout,"%s:%d:DEBUG:DECODING ROW-------------------------MODE:%s\n", FL, (mode?"Freespace":"Standard"));
-		hdump((unsigned char *)p, 16, "Decode_row start data");
+		hdump(p, 16, "Decode_row start data");
 	}
 
 	payload->overflow_pages[0] = 0;
@@ -717,7 +731,7 @@ int decode_row( struct globals *g, char *p, char *data_endpoint, struct sql_payl
 		// if the page is beyond the file range, then we've just got defective input data
 		if (ovp > g->page_count) return 0;
 		DEBUG fprintf(stdout,"%s:%d:DEBUG: First overflow page = %lu\n", FL , (long unsigned int)ovp);
-		DEBUG hdump((unsigned char *)(data_endpoint -16), 16, "First overflow page start data");
+		DEBUG hdump(data_endpoint -16, 16, "First overflow page start data");
 
 
 		while (ovp > 0) {
@@ -806,7 +820,7 @@ int decode_row( struct globals *g, char *p, char *data_endpoint, struct sql_payl
 			offset += payload->cells[t].s;
 			if (offset > payload->length) return 0;
 
-			DEBUG { fprintf(stdout,"[%d:%d:%d-%d(%ld)]", t, payload->cells[t].t, payload->cells[t].s, payload->cells[t].o, plh_ep -p ); }
+			DEBUG { fprintf(stdout,"[%d:%d:%d-%d(%td)]", t, payload->cells[t].t, payload->cells[t].s, payload->cells[t].o, plh_ep -p ); }
 
 			if (p >= plh_ep) break;
 			t++;
@@ -816,12 +830,12 @@ int decode_row( struct globals *g, char *p, char *data_endpoint, struct sql_payl
 
 		if (p == plh_ep) {
 			DEBUG {
-				fprintf(stdout,"DEBUG: Payload head size match. (%ld =? %ld)\n ", p -base,plh_ep -base);
+				fprintf(stdout,"DEBUG: Payload head size match. (%td =? %td)\n ", p -base,plh_ep -base);
 				fprintf(stdout,"DEBUG: Data size by cell meta sum = %d\n ", offset );
 			}
 		} else {
 			DEBUG {
-				fprintf(stdout,"DEBUG: Payload scan end point, and predicted end point didn't match, difference %ld \n", p -plh_ep );
+				fprintf(stdout,"DEBUG: Payload scan end point, and predicted end point didn't match, difference %td \n", p -plh_ep );
 			}
 		}
 
@@ -914,14 +928,14 @@ Comments:
 Changes:
 
 \------------------------------------------------------------------*/
-	int dump_row( struct globals *g, char *base, char *data_endpoint, struct sql_payload *payload, int mode ) {
+	int dump_row( struct globals *g, uint8_t *base, uint8_t *data_endpoint, struct sql_payload *payload, int mode ) {
 		int t = 0;
 		int ovpi;
-		void *addr;
+		uint8_t *addr;
 
 
 		DEBUG fprintf(stdout,"\n-DUMPING ROW------------------\n");
-		DEBUG hdump((unsigned char *)base, 16, "Dump_row starting data");
+		DEBUG hdump(base, 16, "Dump_row starting data");
 
 		if ( payload->length > g->db_size ) {
 			DEBUG fprintf(stdout,"%s:%d:ERROR: Nonsensical payload length of %ld requested, ignoring.\n", FL, (long int)payload->length);
@@ -939,7 +953,7 @@ Changes:
 			ovpi = 0;
 			while (payload->overflow_pages[ovpi]) {
 				addr = g->db_origin +((payload->overflow_pages[ovpi]-1) *g->page_size) +4; //PLD:20141221-2240 segfault fix
-				if (( addr < (void *)g->db_origin) || ( addr+4 > (void *)g->db_end)) {
+				if (( addr < g->db_origin) || ( addr+4 > g->db_end)) {
 					DEBUG fprintf(stdout,"%s:%d:dump_row:ERROR: page seek request outside of boundaries of file (%p < %p > %p)\n", FL, g->db_origin, addr, g->db_end);
 					return -1;
 				}
@@ -947,30 +961,30 @@ Changes:
 				ovpi++;
 			}
 
-			printf("plength %ld, total: %d\n", payload->length, msize);
+			printf("plength %" PRIu64 ", total: %d\n", payload->length, msize);
 			//__asm__("int $3");
 			payload->mapped_data = malloc(msize);
 			if ( !payload->mapped_data ) {
-				fprintf(stderr,"%s:%d:ERROR: Cannot allocate %ld bytes for mapped data\n", FL, (long int)payload->length +100);
+				fprintf(stderr,"%s:%d:ERROR: Cannot allocate %" PRIu64 " bytes for mapped data\n", FL, payload->length +100);
 				return -1;
 			}
-			DEBUG fprintf(stdout,"ALLOCATED %d bytes to mapped data\n", (int)(payload->length +100) );
-			if (!payload->mapped_data){ fprintf(stderr,"ERROR: Cannot allocate %d bytes for payload\n", (int)(payload->length +1)); return 0; }
+			DEBUG fprintf(stdout,"ALLOCATED %" PRIu64 " bytes to mapped data\n", payload->length +100);
+			if (!payload->mapped_data){ fprintf(stderr,"ERROR: Cannot allocate %" PRIu64 " bytes for payload\n", payload->length +1); return 0; }
 			memset( payload->mapped_data, 'X', payload->length +1 );
 
 			// load in the first, default page.
 			DEBUG fprintf(stdout,"Copying data for initial page\n");
 			memcpy(payload->mapped_data, base, data_endpoint -base );
 			payload->mapped_data_endpoint = payload->mapped_data +(data_endpoint -base -4);
-			//		DEBUG hdump( (unsigned char *)payload->mapped_data, payload->mapped_data_endpoint -payload->mapped_data +4  );
+			//		DEBUG hdump(payload->mapped_data, payload->mapped_data_endpoint -payload->mapped_data +4  );
 
 			// Load in the overflow pages (if any)
 			ovpi = 0;
 			while (payload->overflow_pages[ovpi]) {
-				DEBUG fprintf(stdout,"Copying data from file to memory for page %d to offset [%d]\n", payload->overflow_pages[ovpi], (int)(payload->mapped_data_endpoint -payload->mapped_data));
+				DEBUG fprintf(stdout,"Copying data from file to memory for page %d to offset [%td]\n", payload->overflow_pages[ovpi], payload->mapped_data_endpoint -payload->mapped_data);
 
 				addr = g->db_origin +((payload->overflow_pages[ovpi]-1) *g->page_size) +4; //PLD:20141221-2240 segfault fix
-				if (( addr < (void *)g->db_origin) || ( addr+4 > (void *)g->db_end)) {
+				if (( addr < g->db_origin) || ( addr+4 > g->db_end)) {
 					DEBUG fprintf(stdout,"%s:%d:dump_row:ERROR: page seek request outside of boundaries of file (%p < %p > %p)\n", FL, g->db_origin, addr, g->db_end);
 					return -1;
 				}
@@ -978,13 +992,13 @@ Changes:
 				memcpy(payload->mapped_data_endpoint, addr, g->page_size -4);
 				payload->mapped_data_endpoint += g->page_size -4;
 
-				//	DEBUG hdump( (unsigned char *)payload->mapped_data, payload->mapped_data_endpoint -payload->mapped_data );
+				//	DEBUG hdump(payload->mapped_data, payload->mapped_data_endpoint -payload->mapped_data );
 
 				ovpi++;
 			}
 		}
 
-		DEBUG hdump((unsigned char *)payload->mapped_data, payload->mapped_data_endpoint -payload->mapped_data, "Payload mapped data" );
+		DEBUG hdump(payload->mapped_data, payload->mapped_data_endpoint -payload->mapped_data, "Payload mapped data" );
 
 		if (mode == DECODE_MODE_FREESPACE) {
 			t = 0;
@@ -994,7 +1008,7 @@ Changes:
 
 		while (t <= payload->cell_count) {
 			DEBUG fprintf(stdout,"%s:%d:DEBUG: Cell[%d], Type:%d, size:%d, offset:%d\n", FL , t, payload->cells[t].t, payload->cells[t].s, payload->cells[t].o);
-			if (t == -1) fprintf(stdout,"%ld", (long unsigned int) payload->rowid);
+			if (t == -1) fprintf(stdout,"%" PRIu64, payload->rowid);
 			if (t>=0) { fprintf(stdout,",");
 				switch (payload->cells[t].t) {
 					case 0: fprintf(stdout,"NULL"); break;
@@ -1020,8 +1034,8 @@ Changes:
 							}
 							break;
 
-					case 5: fprintf(stdout,"%d", ntohl(*(payload->mapped_data +payload->cells[t].o))); break;
-					case 6: fprintf(stdout,"%d", ntohl(*(payload->mapped_data +payload->cells[t].o))); break;
+					case 5: fprintf(stdout,"%u", (uint32_t)ntohl(*(payload->mapped_data +payload->cells[t].o))); break;
+					case 6: fprintf(stdout,"%u", (uint32_t)ntohl(*(payload->mapped_data +payload->cells[t].o))); break;
 					case 7: 
 							{
 								uint64_t n;
@@ -1041,11 +1055,11 @@ Changes:
 							if ( g->report_blobs) {
 								if (payload->cells[t].s < g->blob_size_limit) {
 									DEBUG fprintf(stdout,"%s:%d:DEBUG:Not Dumping data to blob file, keeping in CSV\n", FL );
-									blob_dump((unsigned char *) (payload->mapped_data +payload->cells[t].o), payload->cells[t].s );
+									blob_dump(payload->mapped_data +payload->cells[t].o, payload->cells[t].s );
 								} else {
 									// dump the blob to a file.
 									DEBUG fprintf(stdout,"%s:%d:DEBUG:Dumping data to %d.blob [%d bytes]\n", FL ,g->blob_count, payload->cells[t].s);
-									blob_dump_to_file( g, (payload->mapped_data +payload->cells[t].o), payload->cells[t].s );
+									blob_dump_to_file( g, payload->mapped_data +payload->cells[t].o, payload->cells[t].s );
 									DEBUG fprintf(stdout,"\"%d.blob\"", g->blob_count);
 								}
 							}
@@ -1059,7 +1073,7 @@ Changes:
 					default:
 							fprintf(stderr,"Invalid cell type '%d'", payload->cells[t].t);
 							DEBUG fprintf(stdout,"%s:%d:DEBUG: Invalid cell type '%d'", FL, payload->cells[t].t);
-							DEBUG hdump( (unsigned char *) base, 128, "Invalid cell type" );
+							DEBUG hdump(base, 128, "Invalid cell type" );
 							return 0;
 							break;
 				} // switch cell type
@@ -1102,9 +1116,9 @@ Changes:
 
 
 \------------------------------------------------------------------*/
-	char *find_next_row( struct globals *g, char *s, char *end_point, char *global_start, int mode, size_t forced_length ) {
+	uint8_t *find_next_row( struct globals *g, uint8_t *s, uint8_t *end_point, uint8_t *global_start, int mode, size_t forced_length ) {
 
-		char *p;
+		uint8_t *p;
 		struct sql_payload sql;
 
 		DEBUG fprintf(stdout,"find_next_row: MODE: %d\n", mode );
@@ -1115,7 +1129,7 @@ Changes:
 
 			row = decode_row( g, p, end_point, &sql, mode, forced_length );
 			if (row) {
-				DEBUG fprintf(stdout,"ROWID: %ld found [+%ld] record size: %d bytes\n", (unsigned long int)sql.rowid, p -global_start, (unsigned int)( sql.length+sql.prefix_length ));
+				DEBUG fprintf(stdout,"ROWID: %" PRIu64 " found [+%td] record size: %" PRIu64 " bytes\n", sql.rowid, p -global_start, sql.length+sql.prefix_length);
 				fflush(stdout);
 
 				/** If we're only wanting the removed, no-key-value rows, then 
@@ -1145,7 +1159,7 @@ Changes:
 						break;
 					} else {
 						p+=row; forced_length -= row;
-						DEBUG hdump((unsigned char *)p,64, "After freespace decode");
+						DEBUG hdump(p,64, "After freespace decode");
 					}
 				}
 			} else {
@@ -1183,7 +1197,7 @@ Changes:
 		int fd;
 		struct globals globo, *g;
 		struct stat st;
-		char *p;
+		uint8_t *p;
 		int stat_result;
 
 		/**
@@ -1287,7 +1301,7 @@ Changes:
 					from the block so our strstr() calls aren't prematurely terminated.
 				*/
 				DEBUG {
-					char *p;
+					uint8_t *p;
 					size_t l;
 					int bc = 0;
 
@@ -1342,7 +1356,7 @@ Changes:
 						DEBUG fprintf(stdout,"%s:%d:DEBUG: FREEBLOCK mode ON: header decode [offset=%u]\n", FL , leaf.freeblock_offset);
 
 						do {
-							DEBUG hdump((unsigned char *)(g->db_cfp +off), 16, "Freeblock header data");
+							DEBUG hdump(g->db_cfp +off, 16, "Freeblock header data");
 
 							memcpy( &next, ( g->db_cfp +off ), 2 );
 							next = ntohs( next );
@@ -1364,7 +1378,7 @@ Changes:
 					DEBUG fprintf(stdout,"%s:%d:DEBUG: Freeblock offset = %u, size = %u, next block = %u \n", FL , leaf.freeblock_offset, leaf.freeblock_size, leaf.freeblock_next );
 					if (leaf.freeblock_size > 0) {
 						DEBUG fprintf(stdout,"%s:%d:DEBUG: Freeblock data [ %d bytes total [4 bytes for header] ]\n", FL, leaf.freeblock_size );
-						DEBUG hdump( (unsigned char *)(g->db_cfp +leaf.freeblock_offset+4), leaf.freeblock_size-4, "Actual data in free block" );
+						DEBUG hdump(g->db_cfp +leaf.freeblock_offset+4, leaf.freeblock_size-4, "Actual data in free block" );
 					}
 					fflush(stdout);
 					//				leaf.freeblock_offset = ntohs( ta );
@@ -1402,7 +1416,7 @@ Changes:
 							g->db_cfp = g->db_cfp + leaf.freeblock_offset +4;
 
 							DEBUG fprintf(stdout,"%s:%d:DEBUG: New position = %p\n", FL , g->db_cfp);
-							DEBUG hdump((unsigned char *)g->db_cfp -4,32, "Scratch pointer at freespace data start (including 4 byte header)");
+							DEBUG hdump(g->db_cfp -4,32, "Scratch pointer at freespace data start (including 4 byte header)");
 							DEBUG fflush(stdout);
 						}
 					}
@@ -1416,7 +1430,7 @@ Changes:
 				//if ((leaf.page_byte == 13)) {
 				if (1) {
 
-					char *row;
+					uint8_t *row;
 					row = g->db_cfp;
 					DEBUG fprintf(stdout,"%s:%d:DEBUG: g->db_cfp search at = %p\n", FL , g->db_cfp);
 					do {
@@ -1429,7 +1443,7 @@ Changes:
 							if (row > g->db_cpp_limit) fprintf(stdout,"ERROR: beyond end point\n");
 							if (row < g->db_cfp) DEBUG fprintf(stdout,"%s:%d:DEBUG: Row location not in g->db_cfp page\n", FL );
 							if (row == NULL) DEBUG fprintf(stdout,"%s:%d:DEBUG: Row has been returned as NULL\n", FL );
-							DEBUG fprintf(stdout,"%s:%d:DEBUG: ROW found at offset: %ld\n", FL, row-g->db_cfp);
+							DEBUG fprintf(stdout,"%s:%d:DEBUG: ROW found at offset: %td\n", FL, row-g->db_cfp);
 						} else {
 
 							break;

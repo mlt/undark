@@ -6,8 +6,8 @@
 
 #include "varint.h"
 
-int varint_decode(uint64_t *result, char *varint_p, char **end) {
-	char *p;
+int varint_decode(uint64_t *result, uint8_t *varint_p, uint8_t **end) {
+	uint8_t *p;
 	int shift;
 	int length;
 	uint64_t value;
