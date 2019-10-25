@@ -1,0 +1,96 @@
+image: Visual Studio 2019
+configuration: Release
+platform: x64
+clone_depth: 1
+cache: c:\tools\vcpkg\installed\
+#environment:
+#  MSYSTEM: MINGW64
+#  MSYS2_ARCH: x86_64
+
+install:
+- vcpkg integrate install
+- vcpkg install mman:x86-windows mman:x64-windows
+- wsl sudo apt-get update -y -qq
+- wsl sudo apt-get install -y -qq gcc make
+- git clone --depth 1 https://github.com/witwall/mman-win32.git c:\projects\mman-win32
+#- Path C:\msys64\mingw64\bin;C:\msys64\usr\bin;%PATH%
+#- C:\msys64\usr\bin\bash -lc "pacman --needed --noconfirm -Sy pacman-mirrors"
+#- C:\msys64\usr\bin\bash -lc "pacman --noconfirm -Su"
+#- C:\msys64\usr\bin\bash -lc "pacman --noconfirm -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-make mingw-w64-x86_64-binutils"
+- set MSYSTEM=MINGW64
+- C:\msys64\usr\bin\bash -lc "cd /c/projects/mman-win32 && ./configure --prefix=/mingw64 && make && make install"
+- set MSYSTEM=MINGW32
+- C:\msys64\usr\bin\bash -lc "cd /c/projects/mman-win32 && ./configure --prefix=/mingw32 && make clean && make && make install"
+
+build_script:
+- msbuild /p:PlatformToolset=v142 /p:configuration=%CONFIGURATION% /p:platform=x64
+          undark.vcxproj
+          /verbosity:minimal /logger:"C:\Program Files\AppVeyor\BuildAgent\Appveyor.MSBuildLogger.dll"
+- msbuild /p:PlatformToolset=v142 /p:configuration=%CONFIGURATION% /p:platform=Win32
+          undark.vcxproj
+          /verbosity:minimal /logger:"C:\Program Files\AppVeyor\BuildAgent\Appveyor.MSBuildLogger.dll"
+- set MSYSTEM=MINGW64
+- C:\msys64\usr\bin\bash -lc "cd /c/projects/%APPVEYOR_PROJECT_NAME% && make -f Makefile.mingw32"
+- ren undark.exe undark_mingw64.exe
+- set MSYSTEM=MINGW32
+- C:\msys64\usr\bin\bash -lc "cd /c/projects/%APPVEYOR_PROJECT_NAME% && make -f Makefile.mingw32 clean && make -f Makefile.mingw32"
+- ren undark.exe undark_mingw32.exe
+- wsl make clean
+- wsl make
+
+after_build:
+- ps: |
+    Add-AppveyorMessage Packing -Category Information
+    New-Item -Name stage_x64 -ItemType "directory"
+    Copy-Item LICENSE -Destination stage_x64
+    Copy-Item x64\$env:Configuration\undark.exe -Destination stage_x64
+    Copy-Item x64\$env:Configuration\mman.dll -Destination stage_x64
+    if ($env:APPVEYOR_REPO_TAG -eq "false") {
+      $env:APPVEYOR_REPO_TAG_NAME=${env:APPVEYOR_REPO_COMMIT}.SubString(0,8)
+    }
+    $zip = "undark-$env:APPVEYOR_REPO_TAG_NAME-windows-x64.zip"
+    Compress-Archive -Path ".\stage_x64\*" -DestinationPath $zip
+
+    New-Item -Name stage_x86 -ItemType "directory"
+    Copy-Item LICENSE -Destination stage_x86
+    Copy-Item $env:Configuration\undark.exe -Destination stage_x86
+    Copy-Item $env:Configuration\mman.dll -Destination stage_x86
+    $zip = "undark-$env:APPVEYOR_REPO_TAG_NAME-windows-x86.zip"
+    Compress-Archive -Path ".\stage_x86\*" -DestinationPath $zip
+
+test_script:
+- ps: |
+    Write-Host "Creating sample database"
+    & cmd /c 'C:\msys64\mingw64\bin\sqlite3.exe sample.db < sql\sample.sql'
+    Write-Host "Testing Visual Studio 64 bit build"
+    & cmd /c 'x64\%Configuration%\undark -i sample.db > sample.vc64'
+    & diff.exe -w sample.vc64 expected\sample.out
+    Write-Host "Testing Visual Studio 32 bit build"
+    & cmd /c 'x64\%Configuration%\undark -i sample.db > sample.vc86'
+    & diff.exe -w sample.vc86 expected\sample.out
+    Write-Host "Testing Debian GNU/Linux build"
+    & cmd /c 'wsl ./undark -i sample.db > sample.wsl'
+    & diff.exe --text -w sample.wsl expected\sample.out
+    Write-Host "Testing Msys2 MinGW64 build"
+    & cmd /c 'undark_mingw64.exe -i sample.db > sample.mingw64'
+    & diff.exe --text -w sample.mingw64 expected\sample.out
+    Write-Host "Testing Msys2 MinGW32 build"
+    & cmd /c 'undark_mingw32.exe -i sample.db > sample.mingw32'
+    & diff.exe --text -w sample.mingw32 expected\sample.out
+    $host.SetShouldExit(0)
+
+artifacts:
+- path: '*.zip'
+
+deploy:
+    # Deploy to GitHub Releases
+  - provider: GitHub
+    draft: false
+    prerelease: false
+    auth_token:
+      secure: QR7uEDoDDcUclQhaQDdbymUotMh1Gq++D+ljzKGC4a1Y9hr6BszPYRcLy9i0HJ/k
+    on:
+      appveyor_repo_tag: true       # deploy on tag push only
+
+# on_finish:
+#   - ps: $blockRdp = $true; iex ((new-object net.webclient).DownloadString('https://raw.githubusercontent.com/appveyor/ci/master/scripts/enable-rdp.ps1'))
