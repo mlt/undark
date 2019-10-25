@@ -119,9 +119,9 @@ struct cell {
 
 struct sql_payload {
 	uint64_t prefix_length;
-	uint64_t length;
-	uint64_t rowid;
-	uint64_t header_size;
+	int64_t length;
+	int64_t rowid;
+	int64_t header_size;
 	int cell_count;
 	int cell_page;
 	int cell_page_offset;
@@ -701,7 +701,6 @@ int decode_row( struct globals *g, uint8_t *p, uint8_t *data_endpoint, struct sq
 		varint_decode( &(payload->rowid), p, &p );
 	}
 
-	if (payload->rowid < 1) return 0;
 
 	payload->prefix_length = p -base; // store this so we know how many bytes the length + Row ID took up.
 
@@ -784,14 +783,14 @@ int decode_row( struct globals *g, uint8_t *p, uint8_t *data_endpoint, struct sq
 
 		plh_ep += payload->header_size; // if we got a sane value, then we can use this for the full decode size ( includes the size of the first varint telling us the size )
 
-		DEBUG { fprintf(stdout,"[L:%lld][id:%lld][PLHz:%lld]",(long long int) payload->length, (long long int)payload->rowid, (long long int)payload->header_size); }
+		DEBUG { fprintf(stdout,"[L:%" PRIu64 "][id:%" PRId64 "][PLHz:%" PRIu64 "]", payload->length, payload->rowid, payload->header_size); }
 
 		t = 0;
 		offset = 0;
 
 
 		while (1) {
-			uint64_t s;
+			int64_t s;
 			int vil;
 
 			vil = varint_decode( &s, p, &p ); 
@@ -1008,7 +1007,7 @@ Changes:
 
 		while (t <= payload->cell_count) {
 			DEBUG fprintf(stdout,"%s:%d:DEBUG: Cell[%d], Type:%d, size:%d, offset:%d\n", FL , t, payload->cells[t].t, payload->cells[t].s, payload->cells[t].o);
-			if (t == -1) fprintf(stdout,"%" PRIu64, payload->rowid);
+			if (t == -1) fprintf(stdout,"%" PRId64, payload->rowid);
 			if (t>=0) { fprintf(stdout,",");
 				switch (payload->cells[t].t) {
 					case 0: fprintf(stdout,"NULL"); break;
@@ -1129,7 +1128,7 @@ Changes:
 
 			row = decode_row( g, p, end_point, &sql, mode, forced_length );
 			if (row) {
-				DEBUG fprintf(stdout,"ROWID: %" PRIu64 " found [+%td] record size: %" PRIu64 " bytes\n", sql.rowid, p -global_start, sql.length+sql.prefix_length);
+				DEBUG fprintf(stdout,"ROWID: %" PRId64 " found [+%td] record size: %" PRIu64 " bytes\n", sql.rowid, p -global_start, sql.length+sql.prefix_length);
 				fflush(stdout);
 
 				/** If we're only wanting the removed, no-key-value rows, then 
